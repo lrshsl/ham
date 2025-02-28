@@ -1,3 +1,5 @@
+INPUT=examples/02_functions.ma
+
 builddir=build
 bin=$(builddir)/translated
 pysrc=translate.py
@@ -19,7 +21,7 @@ $(obj): $(asmsrc) $(builddir)
 	$(asm) -f $(asmarch) $< -o $@
 
 $(asmsrc): $(pysrc) $(builddir)
-	python $< > $@
+	python $< $(INPUT) $@
 
 $(builddir):
 	mkdir $(builddir)
