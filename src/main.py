@@ -10,7 +10,7 @@ statics: list[str] = []
 uinit_statics: list[str] = []
 prog: list[tuple[str, str]] = []
 
-Value = str | int | float | dict[str, "Value"]
+Value = str | float | dict[str, "Value"]
 const_symbols: dict[str, Value] = {}
 
 
@@ -63,7 +63,7 @@ def dump_data_section(consts: list[str], output: IO[str] | None = None) -> None:
 
 
 def dump_text_section(instructions: list[tuple[str, str]], output: IO[str] | None = None) -> None:
-    print('section .text\n', file=output)
+    print('section .text', file=output)
     for label, inst in instructions:
         if label:
             print(f'\n{label}:\n', file=output)
@@ -103,7 +103,8 @@ def parse_top_level(s: str) -> str | None:
     match fst:
         case 'const':
             x, rst = parse_const_decl(rst)
-            consts.append(x)
+            if x != '':
+                consts.append(x)
         case 'static':
             if '=' in rst.split(';', maxsplit=1)[0]:
                 x, rst = parse_db_decl(rst)
@@ -119,17 +120,27 @@ def parse_top_level(s: str) -> str | None:
             inst, rst = parse_stmt(rst)
             prog.append((label, inst))
         case '//':
-            _, rst = rst.split('\n', maxsplit=1)
-            rst = rst if '\n' in rst else ''
+            if '\n' in rst:
+                _, rst = rst.split('\n', maxsplit=1)
+            else:
+                rst = ''
         case '///':
             comment, rst = next_token(rst, '\n')
             prog.append(('', '; ' + comment))
             rst = rst if '\n' in rst else ''
         case other:
-            x, rst = parse_stmt(' '.join((other, rst)))
-            prog.append(('', x))
+            raise Exception(f'Wrong: {other}')
 
     return rst
+
+
+def parse_table(s: str) -> tuple[dict[str, Value], str]:
+    content = s.strip().lstrip('{')
+    content, rst = split_on_matching(content, '{', '}')
+
+    entries = (list(split_and_strip(e, '=')) for e in content.split(','))
+    entries = {e[0]: process_arg(e[1]) for e in entries if len(e) == 2}
+    return entries, rst
 
 
 def parse_resb_decl(s: str) -> tuple[str, str]:
@@ -163,43 +174,49 @@ def parse_const_decl(s: str) -> tuple[str, str]:
     if ' ' in name:
         _type, name = next_token(name)
         if _type == 'table':
-            return parse_table_decl(name, value), rst
+            table, _ = parse_table(value)
+            const_symbols[name] = table
+            return '', rst
 
     value = process_arg(value)
     const_symbols[name] = value
     return f'{name}: db {value}', rst
 
 
-def parse_table_decl(name: str, s: str) -> str:
-    content = s.lstrip().lstrip('{')
-    content, _ = content.split('}')
+def split_on_matching(s: str, start_char: str, end_char: str) -> tuple[str, str]:
+    balance = 1
+    for i, char in enumerate(s):
+        if char == start_char:
+            balance += 1
+        elif char == end_char:
+            balance -= 1
 
-    entries = (list(split_and_strip(e, '=')) for e in content.split(','))
-    entries = ((e[0], process_arg(e[1])) for e in entries if len(e) == 2)
-    const_symbols[name] = dict(entries)
-    
-    return ''
+        if balance == 0:
+            return s[:i], s[i + 1:]
+    return s, ''
 
 
 def process_arg(arg: str) -> Value:
     if arg.strip().startswith('$'):
         if value := lookup_pathident(arg[1:]):
             return value
-        
+        raise Exception(f'Could not find ident {arg}')
     elif r := translate_reg(arg):
         return r
     return arg
 
 
 def lookup_pathident(path: str) -> Value | None:
-    pathidents = path.split('.')
+    pathidents = split_and_strip(path, '.')
     namespace = const_symbols
     for ident in pathidents:
-        e = namespace[ident]
-        if isinstance(e, dict):
-            namespace = e
+        if e := namespace.get(ident):
+            if isinstance(e, dict):
+                namespace = e
+            else:
+                return e
         else:
-            return e
+            print(f'not found: {ident} in {namespace}', file=sys.stderr)
 
 def parse_stmt(s: str) -> tuple[str, str]:
     line, rst = next_token(s, ';')
@@ -212,6 +229,7 @@ def parse_stmt(s: str) -> tuple[str, str]:
         ch = '<-' if mov_left else '->'
         target, line_rst = next_token(line, ch)
         src = line_rst.strip()
+        assert not ' ' in src
         src, target = process_arg(src), process_arg(target)
 
         if mov_right:
@@ -239,7 +257,7 @@ def parse_fn_def(s: str) -> tuple[tuple[str, str], str]:
     if name == 'main':
         name = '_start'
 
-    argline, rst = next_token(rst, ')')
+    argline, rst = split_on_matching(rst, '(', ')')
     params = list(split_and_strip(argline, ','))
     #registers = (params[i] for i in range(0, len(params), 2))
 
@@ -261,6 +279,13 @@ def parse_statements(s: str) -> tuple[list[str], str]:
         tok, rst = next_token(s)
         if tok in ('}', ''):
             break
+        if tok in ('//', '///'):
+            if '\n' not in rst:
+                return stmts, ''
+            comment, s = rst.split('\n', maxsplit=1)
+            if tok == '///':
+                stmts.append(f'; {comment}')
+            continue
         stmt, s = parse_stmt(s)
         stmts.append(stmt)
     return stmts, rst
