@@ -11,7 +11,7 @@ uinit_statics: list[str] = []
 prog: list[tuple[str, str]] = []
 
 Value = str | int | float | dict[str, "Value"]
-symbols: dict[str, Value] = {}
+const_symbols: dict[str, Value] = {}
 
 
 def main():
@@ -147,7 +147,8 @@ def parse_db_decl(s: str) -> tuple[str, str]:
     # Example: `static a = 4;`
     name, rst = next_token(s, '=')
     value, rst = next_token(rst, ';')
-    symbols[name] = value
+    value = process_arg(value)
+    const_symbols[name] = value
     return f'{name}: db {value}', rst
 
 
@@ -158,33 +159,47 @@ def parse_const_decl(s: str) -> tuple[str, str]:
     #
     name, rst = next_token(s, '=')
     value, rst = next_token(rst, ';')
+
     if ' ' in name:
         _type, name = next_token(name)
         if _type == 'table':
             return parse_table_decl(name, value), rst
-    symbols[name] = value
+
+    value = process_arg(value)
+    const_symbols[name] = value
     return f'{name}: db {value}', rst
 
 
 def parse_table_decl(name: str, s: str) -> str:
-    _, content = s.split('{')
+    content = s.lstrip().lstrip('{')
     content, _ = content.split('}')
 
     entries = (list(split_and_strip(e, '=')) for e in content.split(','))
-    entries = ((e[0], e[1]) for e in entries if len(e) == 2)
-    symbols[name] = dict(entries)
+    entries = ((e[0], process_arg(e[1])) for e in entries if len(e) == 2)
+    const_symbols[name] = dict(entries)
     
     return ''
 
 
 def process_arg(arg: str) -> Value:
-    result: Value = arg
-    if arg.startswith('$') and (r := symbols.get(arg[1:])):
-        return r
+    if arg.strip().startswith('$'):
+        if value := lookup_pathident(arg[1:]):
+            return value
+        
     elif r := translate_reg(arg):
         return r
-    return result
+    return arg
 
+
+def lookup_pathident(path: str) -> Value | None:
+    pathidents = path.split('.')
+    namespace = const_symbols
+    for ident in pathidents:
+        e = namespace[ident]
+        if isinstance(e, dict):
+            namespace = e
+        else:
+            return e
 
 def parse_stmt(s: str) -> tuple[str, str]:
     line, rst = next_token(s, ';')
@@ -192,13 +207,15 @@ def parse_stmt(s: str) -> tuple[str, str]:
     mov_left: bool = '<-' in line
     mov_right: bool = '->' in line
     assert not (mov_left and mov_right)
+
     if mov_left or mov_right:
         ch = '<-' if mov_left else '->'
         target, line_rst = next_token(line, ch)
         src = line_rst.strip()
+        src, target = process_arg(src), process_arg(target)
 
         if mov_right:
-            target, src = process_arg(src), process_arg(target)
+            target, src = src, target
 
         return f'\tmov {target}, {src}', rst
 
